@@ -155,6 +155,10 @@ module.exports = function () {
         return matching.legs.map(l => {return zip(l.annotation.duration, l.annotation.distance).map(p => { return p.join(':'); }).join(','); }).join(',');
     };
 
+    this.lanesList = (instructions) => {
+        return this.extractInstructionList(instructions, s => "lanes" in s.maneuver ? s.maneuver.lanes.join(' ') : '');
+    };
+
     this.turnList = (instructions) => {
         return instructions.legs.reduce((m, v) => m.concat(v.steps), [])
             .map(v => {

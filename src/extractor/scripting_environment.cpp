@@ -77,6 +77,7 @@ void ScriptingEnvironment::InitContext(ScriptingEnvironment::Context &context)
     luabind::module(context.state)
         [luabind::def("durationIsValid", durationIsValid),
          luabind::def("parseDuration", parseDuration),
+         luabind::def("trimLaneString", trimLaneString),
          luabind::class_<TravelMode>("mode").enum_(
              "enums")[luabind::value("inaccessible", TRAVEL_MODE_INACCESSIBLE),
                       luabind::value("driving", TRAVEL_MODE_DRIVING),
@@ -143,7 +144,8 @@ void ScriptingEnvironment::InitContext(ScriptingEnvironment::Context &context)
                  "forward_mode", &ExtractionWay::get_forward_mode, &ExtractionWay::set_forward_mode)
              .property("backward_mode",
                        &ExtractionWay::get_backward_mode,
-                       &ExtractionWay::set_backward_mode),
+             .def_readwrite("turn_lanes_forward", &ExtractionWay::turn_lanes_forward)
+             .def_readwrite("turn_lanes_backward", &ExtractionWay::turn_lanes_backward)
          luabind::class_<osmium::WayNodeList>("WayNodeList").def(luabind::constructor<>()),
          luabind::class_<osmium::NodeRef>("NodeRef")
              .def(luabind::constructor<>())
