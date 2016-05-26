@@ -140,12 +140,13 @@ void ScriptingEnvironment::InitContext(ScriptingEnvironment::Context &context)
              .def_readwrite("is_access_restricted", &ExtractionWay::is_access_restricted)
              .def_readwrite("is_startpoint", &ExtractionWay::is_startpoint)
              .def_readwrite("duration", &ExtractionWay::duration)
+             .def_readwrite("turn_lanes_forward", &ExtractionWay::turn_lanes_forward)
+             .def_readwrite("turn_lanes_backward", &ExtractionWay::turn_lanes_backward)
              .property(
                  "forward_mode", &ExtractionWay::get_forward_mode, &ExtractionWay::set_forward_mode)
              .property("backward_mode",
                        &ExtractionWay::get_backward_mode,
-             .def_readwrite("turn_lanes_forward", &ExtractionWay::turn_lanes_forward)
-             .def_readwrite("turn_lanes_backward", &ExtractionWay::turn_lanes_backward)
+                       &ExtractionWay::set_backward_mode),
          luabind::class_<osmium::WayNodeList>("WayNodeList").def(luabind::constructor<>()),
          luabind::class_<osmium::NodeRef>("NodeRef")
              .def(luabind::constructor<>())
