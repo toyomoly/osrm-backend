@@ -199,6 +199,11 @@ Intersection TurnAnalysis::handleSliproads(const EdgeID source_edge_id,
     return intersection;
 }
 
+const IntersectionGenerator& TurnAnalysis::getGenerator() const
+{
+    return intersection_generator;
+}
+
 } // namespace guidance
 } // namespace extractor
 } // namespace osrm

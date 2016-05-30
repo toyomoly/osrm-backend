@@ -151,6 +151,26 @@ Feature: Turn Lane Guidance
             | i,d       | cross,road,road   | depart,turn left,arrive         | ,1,   |
             | i,l       | cross,cross,cross | depart,continue uturn,arrive    | ,1,   |
 
+    Scenario: Turn Lanes at Segregated Road
+        Given the node map
+            |   |   | g | f |   |   |
+            | a |   | b | c |   | d |
+            |   |   |   |   |   |   |
+            |   |   | j | k |   |   |
+
+        And the ways
+            | nodes | name  | turn:lanes:forward      | oneway |
+            | ab    | road  | left\|through&right     | yes    |
+            | bc    | road  |                         | yes    |
+            | cd    | road  |                         | yes    |
+            | gb    | cross |                         | yes    |
+            | bj    | cross |                         | yes    |
+            | kc    | cross |                         | yes    |
+            | cf    | cross |                         | yes    |
+
+        When I route I should get
+            | waypoints | route             | turns                           | lanes |
+            | a,j       | road,cross,cross  | depart,turn right,arrive        | ,0,   |
 
     #this can happen due to traffic lights / lanes not drawn up to the intersection itself
     Scenario: Turn Lanes Given earlier than actual turn
