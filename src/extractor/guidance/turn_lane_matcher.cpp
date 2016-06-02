@@ -55,9 +55,13 @@ typename Intersection::const_iterator findBestMatch(const std::string &tag,
     return std::min_element(intersection.begin(),
                             intersection.end(),
                             [idealized_angle](const ConnectedRoad &lhs, const ConnectedRoad &rhs) {
+                                // if the entry allowed flags don't match, we select the one with
+                                // entry allowed set to true
+                                if (lhs.entry_allowed != rhs.entry_allowed)
+                                    return lhs.entry_allowed;
+
                                 return angularDeviation(idealized_angle, lhs.turn.angle) <
                                        angularDeviation(idealized_angle, rhs.turn.angle);
-                                ;
                             });
 }
 
@@ -118,6 +122,15 @@ bool TurnLaneMatcher::TurnLaneData::operator<(const TurnLaneMatcher::TurnLaneDat
                                                "reverse"};
     return std::find(tag_by_modifier, tag_by_modifier + 8, this->tag) <
            std::find(tag_by_modifier, tag_by_modifier + 8, other.tag);
+}
+
+std::size_t findTag(const std::string &tag, const TurnLaneMatcher::LaneDataVector &data)
+{
+    return std::distance(
+        data.begin(),
+        std::find_if(data.begin(), data.end(), [&](const TurnLaneMatcher::TurnLaneData &lane_data) {
+            return tag == lane_data.tag;
+        }));
 }
 
 TurnLaneMatcher::TurnLaneMatcher(const util::NodeBasedDynamicGraph &node_based_graph,
@@ -252,6 +265,10 @@ Intersection TurnLaneMatcher::assignTurnLanes(const EdgeID via_edge,
         if (lane_data.size() > detail::getNumberOfTurns(intersection))
             lane_data = trimToRelevantLaneData(
                 node_based_graph.GetTarget(via_edge), std::move(lane_data), intersection);
+
+        // check if we were successfull in trimming
+        if (lane_data.size() == detail::getNumberOfTurns(intersection))
+            return simpleMatchTuplesToTurns(std::move(intersection), num_lanes, lane_data);
         /*  FIXME
             We need to check whether the turn lanes have to be propagated further at some points.
             Some turn lanes are given on a segment prior to the one where the turn actually happens.
@@ -737,37 +754,76 @@ TurnLaneMatcher::LaneDataVector TurnLaneMatcher::trimToRelevantLaneData(
                                     angularDeviation(rhs.turn.angle, STRAIGHT_ANGLE);
                          });
 
+    auto straight_tag_index = findTag("through", turn_lane_data);
     // if we have a straight turn, we can check for available turns and postpone other till later
-    if (angularDeviation(straightmost->turn.angle, STRAIGHT_ANGLE) < NARROW_TURN_ANGLE)
+    if (angularDeviation(straightmost->turn.angle, STRAIGHT_ANGLE) < NARROW_TURN_ANGLE &&
+        straight_tag_index < turn_lane_data.size())
     {
         auto next_intersection = turn_analysis.getIntersection(at, straightmost->turn.eid);
         next_intersection =
             turn_analysis.assignTurnTypes(at, straightmost->turn.eid, std::move(next_intersection));
-        for (auto &lane_data : turn_lane_data)
-        {
-            auto best_match = detail::findBestMatch(lane_data.tag, intersection);
-            if (detail::isValidMatch(lane_data.tag, best_match->turn.instruction))
-            {
-                std::cout << "Can Match: " << lane_data.tag
-                          << " to id: " << std::distance(intersection.begin(), best_match)
-                          << std::endl;
-            }
-            else
-            {
-                std::cout << "Straightmost: " << straightmost->turn.angle << " starting at: " << at
-                          << " via " << straightmost->turn.eid << " results in Intersection:"
-                          << std::endl;
-                for (const auto &road : next_intersection)
-                    std::cout << toString(road) << std::endl;
-                auto best_match_at_next_intersection =
-                    detail::findBestMatch(lane_data.tag, next_intersection);
-                if (detail::isValidMatch(lane_data.tag,
-                                         best_match_at_next_intersection->turn.instruction))
+
+        BOOST_ASSERT(detail::isValidMatch(
+            turn_lane_data[straight_tag_index].tag,
+            detail::findBestMatch(turn_lane_data[straight_tag_index].tag, intersection)
+                ->turn.instruction));
+
+        bool can_match_all_items = true;
+        auto separator = std::partition(
+            turn_lane_data.begin(), turn_lane_data.end(), [&](const TurnLaneData &lane_data) {
+                auto best_match = detail::findBestMatch(lane_data.tag, intersection);
+                if (detail::isValidMatch(lane_data.tag, best_match->turn.instruction))
                 {
-                    std::cout << "Can Match At Next Intersection -> Erase and Augment Through"
+                    std::cout << "Can Match: " << lane_data.tag
+                              << " to id: " << std::distance(intersection.begin(), best_match)
                               << std::endl;
+                    return true;
                 }
+                else
+                {
+                    std::cout << "Straightmost: " << straightmost->turn.angle
+                              << " starting at: " << at << " via " << straightmost->turn.eid
+                              << " results in Intersection:" << std::endl;
+                    for (const auto &road : next_intersection)
+                        std::cout << toString(road) << std::endl;
+                    auto best_match_at_next_intersection =
+                        detail::findBestMatch(lane_data.tag, next_intersection);
+                    if (detail::isValidMatch(lane_data.tag,
+                                             best_match_at_next_intersection->turn.instruction))
+                    {
+                        std::cout << "Can Match At Next Intersection -> Erase and Augment Through"
+                                  << std::endl;
+                    }
+                    else
+                    {
+                        can_match_all_items = false;
+                    }
+                    return false;
+                }
+
+            });
+        if (can_match_all_items)
+        {
+            // augment the straight turn to
+            auto &straight_item = turn_lane_data[findTag("through", turn_lane_data)];
+            for (auto itr = separator; itr != turn_lane_data.end(); ++itr)
+            {
+                // TODO we should check whether these are actually next to each other.
+                straight_item.from = std::min(straight_item.from, itr->from);
+                straight_item.to = std::max(straight_item.to, itr->to);
             }
+            turn_lane_data.erase(separator, turn_lane_data.end());
+            std::sort(turn_lane_data.begin(), turn_lane_data.end());
+            std::cout << "Lane Data Output:\n";
+            for (auto data : turn_lane_data)
+                std::cout << "\"" << data.tag << "\" " << (int)data.from << " " << (int)data.to
+                          << std::endl;
+        }
+        else
+        {
+            std::cout << "Failed to match all items" << std::endl;
+            // Well, we messed up
+            std::sort(turn_lane_data.begin(), turn_lane_data.end());
         }
     }
     return turn_lane_data;

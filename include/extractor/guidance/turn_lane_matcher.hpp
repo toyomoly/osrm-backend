@@ -26,6 +26,7 @@ namespace guidance
 
 class TurnLaneMatcher
 {
+  public:
     struct TurnLaneData
     {
         std::string tag;
@@ -34,8 +35,8 @@ class TurnLaneMatcher
 
         bool operator<(const TurnLaneData &other) const;
     };
+    typedef std::vector<TurnLaneData> LaneDataVector;
 
-  public:
     TurnLaneMatcher(const util::NodeBasedDynamicGraph &node_based_graph,
                     const util::NameTable &turn_lane_strings,
                     const std::vector<QueryNode> &node_info_list,
@@ -45,7 +46,6 @@ class TurnLaneMatcher
 
   private:
     using LaneTupel = util::guidance::LaneTupel;
-    typedef std::vector<TurnLaneData> LaneDataVector;
     typedef std::map<std::string, std::pair<LaneID, LaneID>> LaneMap;
 
     std::unordered_map<LaneTupel, std::uint16_t> lane_tupels;
