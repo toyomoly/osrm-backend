@@ -43,6 +43,7 @@ DirectionModifier::Enum getMatchingModifier(const std::string &tag)
                                                            DirectionModifier::SlightLeft,
                                                            DirectionModifier::SlightRight};
 
+    std::cout << "Tag: " << tag << std::endl;
     BOOST_ASSERT(index < 10);
     return modifiers[index];
 }
@@ -262,13 +263,16 @@ Intersection TurnLaneMatcher::assignTurnLanes(const EdgeID via_edge,
     }
     else
     {
+        std::cout << "Handling non-simple instructions" << std::endl;
         if (lane_data.size() > detail::getNumberOfTurns(intersection))
+        {
             lane_data = trimToRelevantLaneData(
                 node_based_graph.GetTarget(via_edge), std::move(lane_data), intersection);
 
-        // check if we were successfull in trimming
-        if (lane_data.size() == detail::getNumberOfTurns(intersection))
-            return simpleMatchTuplesToTurns(std::move(intersection), num_lanes, lane_data);
+            // check if we were successfull in trimming
+            if (lane_data.size() == detail::getNumberOfTurns(intersection))
+                return simpleMatchTuplesToTurns(std::move(intersection), num_lanes, lane_data);
+        }
         /*  FIXME
             We need to check whether the turn lanes have to be propagated further at some points.
             Some turn lanes are given on a segment prior to the one where the turn actually happens.
@@ -702,8 +706,30 @@ bool TurnLaneMatcher::isSimpleIntersection(const LaneDataVector &lane_data,
         return false;
     }
 
-    const auto &data = node_based_graph.GetEdgeData(straightmost_turn.turn.eid);
-    if (data.distance > 30)
+    // check if we can find a valid 1:1 mapping in a straightforward manner
+    bool all_simple = true;
+    bool has_none = false;
+    std::unordered_set<std::size_t> matched_indices;
+    std::cout << "Checking for simple" << std::endl;
+    for (const auto &data : lane_data)
+    {
+        if (data.tag == "none")
+        {
+            has_none = true;
+            continue;
+        }
+        const auto best_match = detail::findBestMatch(data.tag, intersection);
+        std::size_t match_index = std::distance(intersection.begin(), best_match);
+        all_simple &= (matched_indices.count(match_index) == 0);
+        matched_indices.insert(match_index);
+        std::cout << "Matched: " << data.tag << " to " << toString(*best_match) << std::endl;
+        all_simple &= best_match->entry_allowed;
+        all_simple &= detail::isValidMatch(data.tag, best_match->turn.instruction);
+    }
+
+    //either all indices are matched, or we have a single none-value
+    if (all_simple && (matched_indices.size() == lane_data.size() ||
+                       (matched_indices.size() + 1 == lane_data.size() && has_none)))
         return true;
 
     // better save than sorry
@@ -852,6 +878,9 @@ Intersection TurnLaneMatcher::simpleMatchTuplesToTurns(Intersection intersection
     for (auto data : lane_data)
         std::cout << "\"" << data.tag << "\" " << (int)data.from << " " << (int)data.to
                   << std::endl;
+    std::cout << "Intersection:\n";
+    for (auto &road : intersection )
+        std::cout << "\t" << toString(road) << std::endl;
 
     for (std::size_t road_index = 1, valid_turn = 0;
          road_index < intersection.size() && valid_turn < possible_entries;

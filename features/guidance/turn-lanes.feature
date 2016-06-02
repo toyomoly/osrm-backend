@@ -3,7 +3,7 @@ Feature: Turn Lane Guidance
 
     Background:
         Given the profile "car"
-        Given a grid size of 30 meters
+        Given a grid size of 20 meters
 
     #requires https://github.com/cucumber/cucumber-js/issues/417
     #Due to this, we use & as a pipe character. Switch them out for \| when 417 is fixed
@@ -231,7 +231,7 @@ Feature: Turn Lane Guidance
             | fg    | road  | left;through\|through&  | yes    |
             | gh    | road  |                         | yes    |
             | ig    | cross |                         | yes    |
-            | gb    | cross | through\|left           | yes    |
+            | gb    | cross | left\|through           | yes    |
             | bj    | cross |                         | yes    |
             | kc    | cross | left\|through;right     | yes    |
             | cf    | cross | left\|through           | yes    |
