@@ -833,17 +833,6 @@ bool TurnLaneMatcher::isSimpleIntersection(const LaneDataVector &lane_data,
     const auto straightmost_index = detail::findClosestTurnIndex(intersection, STRAIGHT_ANGLE);
     const auto &straightmost_turn = intersection[straightmost_index];
 
-    // if we only have real turns, it cannot be a simple intersection
-    // TODO this has to be handled for the ingoing edge as well. Might be we have to get the
-    // turn lane string from our predecessor
-    std::cout << "Closest turn: " << toString(straightmost_turn) << " at " << straightmost_index
-              << std::endl;
-    if (angularDeviation(straightmost_turn.turn.angle, STRAIGHT_ANGLE) > FUZZY_ANGLE_DIFFERENCE)
-    {
-        std::cout << "No Straight Turn" << std::endl;
-        return false;
-    }
-
     // check if we can find a valid 1:1 mapping in a straightforward manner
     bool all_simple = true;
     bool has_none = false;
