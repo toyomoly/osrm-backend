@@ -48,6 +48,18 @@ DirectionModifier::Enum getMatchingModifier(const std::string &tag)
     return modifiers[index];
 }
 
+// find turn that is closest to a given angle
+std::size_t findClosestTurnIndex(const Intersection &intersection, const double angle)
+{
+    const auto itr = std::min_element(intersection.begin(),
+                                      intersection.end(),
+                                      [angle](const ConnectedRoad &lhs, const ConnectedRoad &rhs) {
+                                          return angularDeviation(lhs.turn.angle, angle) <
+                                                 angularDeviation(rhs.turn.angle, angle);
+                                      });
+    return std::distance(intersection.begin(), itr);
+}
+
 typename Intersection::const_iterator findBestMatch(const std::string &tag,
                                                     const Intersection &intersection)
 {
@@ -172,15 +184,16 @@ Intersection TurnLaneMatcher::assignTurnLanes(const EdgeID via_edge,
     const auto &data = node_based_graph.GetEdgeData(via_edge);
     const auto turn_lane_string =
         data.lane_id != INVALID_LANEID ? turn_lane_strings.GetNameForID(data.lane_id) : "";
-    std::cout << "Edge: " << via_edge << " String " << turn_lane_string << std::endl;
+    std::cout << "Edge: " << via_edge << " String: \"" << turn_lane_string << "\"" << std::endl;
 
-    if (turn_lane_string.empty())
-    {
-        for (auto &road : intersection)
-            road.turn.instruction.lane_tupel = {0, INVALID_LANEID};
-
-        return intersection;
-    }
+    // FIXME this is a workaround due to https://github.com/cucumber/cucumber-js/issues/417,
+    // need to switch statements when fixed
+    // const auto num_lanes = std::count(turn_lane_string.begin(), turn_lane_string.end(), '|') + 1;
+    auto countLanes = [](const std::string &turn_lane_string) {
+        return boost::numeric_cast<LaneID>(
+            std::count(turn_lane_string.begin(), turn_lane_string.end(), '|') + 1 +
+            std::count(turn_lane_string.begin(), turn_lane_string.end(), '&'));
+    };
 
     auto getNextTag = [](std::string &string, const char *separators) {
         auto pos = string.find_last_of(separators);
@@ -206,14 +219,7 @@ Intersection TurnLaneMatcher::assignTurnLanes(const EdgeID via_edge,
         } while (!lane.empty());
     };
 
-    // FIXME this is a workaround due to https://github.com/cucumber/cucumber-js/issues/417,
-    // need to switch statements when fixed
-    // const auto num_lanes = std::count(turn_lane_string.begin(), turn_lane_string.end(), '|') + 1;
-    const LaneID num_lanes = boost::numeric_cast<LaneID>(
-        std::count(turn_lane_string.begin(), turn_lane_string.end(), '|') + 1 +
-        std::count(turn_lane_string.begin(), turn_lane_string.end(), '&'));
-
-    auto lane_data = [&](const LaneID num_lanes, std::string lane_string) {
+    auto convertLaneStringToData = [&](const LaneID num_lanes, std::string lane_string) {
         LaneMap lane_map;
         LaneID lane_nr = 0;
         do
@@ -235,11 +241,88 @@ Intersection TurnLaneMatcher::assignTurnLanes(const EdgeID via_edge,
         std::sort(lane_data.begin(), lane_data.end());
 
         return lane_data;
-    }(num_lanes, turn_lane_string);
+    };
+    const auto previous_lane_string = [&]() -> std::string {
+        /* We need to find the intersection that is located prior to via_edge.
+         *
+         * NODE_X  -> PREVIOUS_ID            -> NODE -> VIA_EDGE -> INTERSECTION
+         * NODE_X? <- STRAIGHTMOST           <- NODE <- UTURN
+         * NODE_X? -> UTURN == PREVIOUSE_ID? -> NODE -> VIA_EDGE
+         *
+         * To do so, we first get the intersection at NODE and find the straightmost turn from that
+         * node. This will result in NODE_X. The uturn in the intersection at NODE_X should be
+         * PREVIOUS_ID. To verify that find, we check the intersection using our PREVIOUS_ID
+         * candidate to check the intersection at NODE for via_edge
+         */
+        std::cout << "Distance: " << data.distance << std::endl;
+        const constexpr double COMBINE_DISTANCE_CUTOFF = 30;
+        if (data.distance > COMBINE_DISTANCE_CUTOFF)
+            return {};
+
+        const auto uturn_id = intersection[0].turn.eid;
+        const auto source_intersection =
+            turn_analysis.getIntersection(node_based_graph.GetTarget(via_edge), uturn_id);
+        // check for a straight turn
+
+        const auto straightmost_index =
+            detail::findClosestTurnIndex(source_intersection, STRAIGHT_ANGLE);
+        if (angularDeviation(source_intersection[straightmost_index].turn.angle, STRAIGHT_ANGLE) >
+            FUZZY_ANGLE_DIFFERENCE)
+            return {};
+
+        const auto node_x =
+            node_based_graph.GetTarget(source_intersection[straightmost_index].turn.eid);
+        const auto intersection_at_straight = turn_analysis.getIntersection(
+            node_based_graph.GetTarget(uturn_id), source_intersection[straightmost_index].turn.eid);
+
+        // now check that the u-turn at the given intersection connects to via-edge
+        const auto previous_id = intersection_at_straight[0].turn.eid;
+        auto check_intersection = turn_analysis.getIntersection(node_x, previous_id);
+
+        const auto check_via_edge =
+            check_intersection[detail::findClosestTurnIndex(check_intersection, STRAIGHT_ANGLE)]
+                .turn.eid;
+        if (check_via_edge != via_edge)
+            return {};
+
+        const auto &previous_data = node_based_graph.GetEdgeData(previous_id);
+        auto previous_string = previous_data.lane_id != INVALID_LANEID
+                                   ? turn_lane_strings.GetNameForID(previous_data.lane_id)
+                                   : "";
+
+        if (previous_string.empty())
+            return previous_string;
+
+        check_intersection = turn_analysis.assignTurnTypes(node_x, previous_id, std::move(check_intersection));
+
+        auto previous_lane_data =
+            convertLaneStringToData(countLanes(previous_string), previous_string);
+        if (isSimpleIntersection(previous_lane_data, check_intersection))
+            return "";
+
+        std::cout << "Previous: " << previous_string << std::endl;
+        for( auto road : check_intersection )
+            std::cout << "\t" << toString(road) << std::endl;
+
+        return previous_string;
+    }();
+
+    std::cout << "Previous String: \"" << previous_lane_string << "\"" << std::endl;
+
+    if (turn_lane_string.empty() && previous_lane_string.empty())
+    {
+        for (auto &road : intersection)
+            road.turn.instruction.lane_tupel = {0, INVALID_LANEID};
+
+        return intersection;
+    }
+    LaneID num_lanes = countLanes(turn_lane_string);
+
+    auto lane_data = convertLaneStringToData(num_lanes, turn_lane_string);
 
     // might be reasonable to handle multiple turns, if we know of a sequence of lanes
     // e.g. one direction per lane, if three lanes and right, through, left available
-    if (lane_data.size() == 1 && lane_data[0].tag == "none")
+    if (!turn_lane_string.empty() && lane_data.size() == 1 && lane_data[0].tag == "none")
     {
         for (auto &road : intersection)
             road.turn.instruction.lane_tupel = {0, INVALID_LANEID};
@@ -247,7 +330,7 @@ Intersection TurnLaneMatcher::assignTurnLanes(const EdgeID via_edge,
     }
 
     // check whether we are at a simple intersection
-    const bool is_simple = isSimpleIntersection(lane_data, intersection);
+    bool is_simple = isSimpleIntersection(lane_data, intersection);
 
     std::cout << "Lane String: " << turn_lane_string
               << " Simple: " << (is_simple ? "true" : "false") << std::endl;
@@ -255,27 +338,55 @@ Intersection TurnLaneMatcher::assignTurnLanes(const EdgeID via_edge,
     auto node = node_based_graph.GetTarget(via_edge);
     auto coordinate = node_info_list[node];
 
-    if (is_simple)
+    if (is_simple && !turn_lane_string.empty())
     {
         lane_data = handleNoneValueAtSimpleTurn(
             node_based_graph.GetTarget(via_edge), std::move(lane_data), intersection);
         return simpleMatchTuplesToTurns(std::move(intersection), num_lanes, lane_data);
     }
-    else
+    else if (turn_lane_string.empty() && !previous_lane_string.empty())
     {
-        std::cout << "Handling non-simple instructions" << std::endl;
-        if (lane_data.size() > detail::getNumberOfTurns(intersection))
-        {
-            lane_data = trimToRelevantLaneData(
-                node_based_graph.GetTarget(via_edge), std::move(lane_data), intersection);
+        std::cout << "Using previous data\n" << std::endl;
+        num_lanes = countLanes(previous_lane_string);
+        lane_data = convertLaneStringToData(num_lanes, previous_lane_string);
+        is_simple = isSimpleIntersection(lane_data, intersection);
 
-            // check if we were successfull in trimming
-            if (lane_data.size() == detail::getNumberOfTurns(intersection))
-                return simpleMatchTuplesToTurns(std::move(intersection), num_lanes, lane_data);
+        std::cout << "Lane String: " << turn_lane_string
+                  << " Simple: " << (is_simple ? "true" : "false") << std::endl;
+        if (is_simple && !previous_lane_string.empty())
+        {
+            lane_data = handleNoneValueAtSimpleTurn(
+                node_based_graph.GetTarget(via_edge), std::move(lane_data), intersection);
+            return simpleMatchTuplesToTurns(std::move(intersection), num_lanes, lane_data);
         }
-        /*  FIXME
-            We need to check whether the turn lanes have to be propagated further at some points.
-            Some turn lanes are given on a segment prior to the one where the turn actually happens.
+        else if (!previous_lane_string.empty())
+        {
+            std::cout << "Handling non-simple instructions" << std::endl;
+            if (lane_data.size() > detail::getNumberOfTurns(intersection))
+            {
+                lane_data = partitionLaneData(node_based_graph.GetTarget(via_edge),
+                                              std::move(lane_data),
+                                              intersection)
+                                .second;
+
+                // check if we were successfull in trimming
+                if (lane_data.size() == detail::getNumberOfTurns(intersection))
+                {
+                    lane_data = handleNoneValueAtSimpleTurn(
+                        node_based_graph.GetTarget(via_edge), std::move(lane_data), intersection);
+
+                    return simpleMatchTuplesToTurns(std::move(intersection), num_lanes, lane_data);
+                }
+            }
+        }
+    }
+    else if (!turn_lane_string.empty())
+    {
+        /*
+            We need to check whether the turn lanes have to be propagated further at some
+           points.
+            Some turn lanes are given on a segment prior to the one where the turn actually
+           happens.
             These have to be pushed along to the segment where the data is actually used.
 
                       |    |           |    |
@@ -314,6 +425,24 @@ Intersection TurnLaneMatcher::assignTurnLanes(const EdgeID via_edge,
 
         */
 
+        std::cout << "Handling non-simple instructions" << std::endl;
+        if (lane_data.size() > detail::getNumberOfTurns(intersection))
+        {
+            lane_data = partitionLaneData(node_based_graph.GetTarget(via_edge),
+                                          std::move(lane_data),
+                                          intersection)
+                            .first;
+
+            // check if we were successfull in trimming
+            if (lane_data.size() == detail::getNumberOfTurns(intersection))
+            {
+                lane_data = handleNoneValueAtSimpleTurn(
+                    node_based_graph.GetTarget(via_edge), std::move(lane_data), intersection);
+
+                return simpleMatchTuplesToTurns(std::move(intersection), num_lanes, lane_data);
+            }
+        }
+
         /*
         std::cout << "Skipping complex intersection, for now (" << std::setprecision(12)
                   << util::toFloating(coordinate.lat) << " " << util::toFloating(coordinate.lon)
@@ -328,7 +457,8 @@ Intersection TurnLaneMatcher::assignTurnLanes(const EdgeID via_edge,
     // Now assign the turn lanes to their respective turns
 
     /*
-    std::cout << "Location: " << std::setprecision(12) << util::toFloating(coordinate.lat) << " "
+    std::cout << "Location: " << std::setprecision(12) << util::toFloating(coordinate.lat) << "
+    "
               << util::toFloating(coordinate.lon) << std::endl;
     for (auto tag : lane_data)
         std::cout << "Lane Information: " << tag.tag << " " << tag.from << "-" << tag.to
@@ -343,8 +473,10 @@ Intersection TurnLaneMatcher::assignTurnLanes(const EdgeID via_edge,
 }
 
 /*
-    Lanes can have the tag none. While a nice feature for visibility, it is a terrible feature for
-   parsing. None can be part of neighboring turns, or not. We have to look at both the intersection
+    Lanes can have the tag none. While a nice feature for visibility, it is a terrible feature
+   for
+   parsing. None can be part of neighboring turns, or not. We have to look at both the
+   intersection
    and the lane data to see what turns we have to augment by the none-lanes
  */
 TurnLaneMatcher::LaneDataVector TurnLaneMatcher::handleNoneValueAtSimpleTurn(
@@ -353,7 +485,8 @@ TurnLaneMatcher::LaneDataVector TurnLaneMatcher::handleNoneValueAtSimpleTurn(
     if (intersection.empty() || lane_data.empty())
         return lane_data;
 
-    // FIXME all this needs to consider the number of lanes at the target to ensure that we augment
+    // FIXME all this needs to consider the number of lanes at the target to ensure that we
+    // augment
     // lanes correctly, if the target lane allows for more turns
     //
     // -----------------
@@ -372,7 +505,8 @@ TurnLaneMatcher::LaneDataVector TurnLaneMatcher::handleNoneValueAtSimpleTurn(
     // -----    |
     //      |   |
     //
-    // Here, the number of lanes in the right road would not allow turns from both lanes, but only
+    // Here, the number of lanes in the right road would not allow turns from both lanes, but
+    // only
     // from the right one
 
     bool has_right = false;
@@ -381,6 +515,7 @@ TurnLaneMatcher::LaneDataVector TurnLaneMatcher::handleNoneValueAtSimpleTurn(
     std::size_t connection_count = 0;
     for (const auto &road : intersection)
     {
+        std::cout << "Road: " << toString(road) << std::endl;
         if (!road.entry_allowed)
             continue;
 
@@ -512,6 +647,7 @@ TurnLaneMatcher::LaneDataVector TurnLaneMatcher::handleNoneValueAtSimpleTurn(
             // we have to reduce it, assigning it to neighboring turns
             else if (connection_count < lane_data.size())
             {
+                std::cout << "Connections: " << connection_count << std::endl;
                 std::cout << "Input" << std::endl;
                 for (auto tag : lane_data)
                     std::cout << "Lane Information: " << tag.tag << " " << (int)tag.from << "-"
@@ -684,23 +820,14 @@ bool TurnLaneMatcher::isSimpleIntersection(const LaneDataVector &lane_data,
     }
 
     // find straightmost turn
-    const auto straightmost_index = [&]() {
-        const auto itr =
-            std::min_element(intersection.begin(),
-                             intersection.end(),
-                             [](const ConnectedRoad &lhs, const ConnectedRoad &rhs) {
-                                 return angularDeviation(lhs.turn.angle, STRAIGHT_ANGLE) <
-                                        angularDeviation(rhs.turn.angle, STRAIGHT_ANGLE);
-                             });
-        return std::distance(intersection.begin(), itr);
-    }();
-
+    const auto straightmost_index = detail::findClosestTurnIndex(intersection, STRAIGHT_ANGLE);
     const auto &straightmost_turn = intersection[straightmost_index];
 
     // if we only have real turns, it cannot be a simple intersection
     // TODO this has to be handled for the ingoing edge as well. Might be we have to get the
     // turn lane string from our predecessor
-    if (angularDeviation(straightmost_turn.turn.angle, 180) > NARROW_TURN_ANGLE)
+    std::cout << "Closest turn: " << toString(straightmost_turn) << " at " << straightmost_index << std::endl;
+    if (angularDeviation(straightmost_turn.turn.angle, STRAIGHT_ANGLE) > FUZZY_ANGLE_DIFFERENCE)
     {
         std::cout << "No Straight Turn" << std::endl;
         return false;
@@ -720,14 +847,17 @@ bool TurnLaneMatcher::isSimpleIntersection(const LaneDataVector &lane_data,
         }
         const auto best_match = detail::findBestMatch(data.tag, intersection);
         std::size_t match_index = std::distance(intersection.begin(), best_match);
+        std::cout << "Already Matched? " << matched_indices.count(match_index) << std::endl;
         all_simple &= (matched_indices.count(match_index) == 0);
         matched_indices.insert(match_index);
         std::cout << "Matched: " << data.tag << " to " << toString(*best_match) << std::endl;
         all_simple &= best_match->entry_allowed;
+        std::cout << "Allowed: " << best_match->entry_allowed << " Valid: " << detail::isValidMatch(data.tag, best_match->turn.instruction) << std::endl;
         all_simple &= detail::isValidMatch(data.tag, best_match->turn.instruction);
     }
 
-    //either all indices are matched, or we have a single none-value
+    std::cout << "Check result: " << all_simple << " " << matched_indices.size() << " " << lane_data.size() << " " << has_none << std::endl;
+    // either all indices are matched, or we have a single none-value
     if (all_simple && (matched_indices.size() == lane_data.size() ||
                        (matched_indices.size() + 1 == lane_data.size() && has_none)))
         return true;
@@ -736,8 +866,10 @@ bool TurnLaneMatcher::isSimpleIntersection(const LaneDataVector &lane_data,
     return false;
 }
 
-TurnLaneMatcher::LaneDataVector TurnLaneMatcher::trimToRelevantLaneData(
-    const NodeID at, LaneDataVector turn_lane_data, const Intersection &intersection) const
+std::pair<TurnLaneMatcher::LaneDataVector, TurnLaneMatcher::LaneDataVector>
+TurnLaneMatcher::partitionLaneData(const NodeID at,
+                                   LaneDataVector turn_lane_data,
+                                   const Intersection &intersection) const
 {
     BOOST_ASSERT(turn_lane_data.size() > detail::getNumberOfTurns(intersection));
     /*
@@ -772,22 +904,18 @@ TurnLaneMatcher::LaneDataVector TurnLaneMatcher::trimToRelevantLaneData(
         std::cout << "\"" << data.tag << "\" " << (int)data.from << " " << (int)data.to
                   << std::endl;
 
-    const auto straightmost =
-        std::min_element(intersection.begin(),
-                         intersection.end(),
-                         [](const ConnectedRoad &lhs, const ConnectedRoad &rhs) {
-                             return angularDeviation(lhs.turn.angle, STRAIGHT_ANGLE) <
-                                    angularDeviation(rhs.turn.angle, STRAIGHT_ANGLE);
-                         });
+    const auto &straightmost =
+        intersection[detail::findClosestTurnIndex(intersection, STRAIGHT_ANGLE)];
 
     auto straight_tag_index = findTag("through", turn_lane_data);
-    // if we have a straight turn, we can check for available turns and postpone other till later
-    if (angularDeviation(straightmost->turn.angle, STRAIGHT_ANGLE) < NARROW_TURN_ANGLE &&
+    // if we have a straight turn, we can check for available turns and postpone other till
+    // later
+    if (angularDeviation(straightmost.turn.angle, STRAIGHT_ANGLE) < NARROW_TURN_ANGLE &&
         straight_tag_index < turn_lane_data.size())
     {
-        auto next_intersection = turn_analysis.getIntersection(at, straightmost->turn.eid);
+        auto next_intersection = turn_analysis.getIntersection(at, straightmost.turn.eid);
         next_intersection =
-            turn_analysis.assignTurnTypes(at, straightmost->turn.eid, std::move(next_intersection));
+            turn_analysis.assignTurnTypes(at, straightmost.turn.eid, std::move(next_intersection));
 
         BOOST_ASSERT(detail::isValidMatch(
             turn_lane_data[straight_tag_index].tag,
@@ -807,8 +935,8 @@ TurnLaneMatcher::LaneDataVector TurnLaneMatcher::trimToRelevantLaneData(
                 }
                 else
                 {
-                    std::cout << "Straightmost: " << straightmost->turn.angle
-                              << " starting at: " << at << " via " << straightmost->turn.eid
+                    std::cout << "Straightmost: " << straightmost.turn.angle
+                              << " starting at: " << at << " via " << straightmost.turn.eid
                               << " results in Intersection:" << std::endl;
                     for (const auto &road : next_intersection)
                         std::cout << toString(road) << std::endl;
@@ -832,18 +960,24 @@ TurnLaneMatcher::LaneDataVector TurnLaneMatcher::trimToRelevantLaneData(
         {
             // augment the straight turn to
             auto &straight_item = turn_lane_data[findTag("through", turn_lane_data)];
+            auto straight_copy = straight_item;
+            auto offset = std::distance(turn_lane_data.begin(), separator);
             for (auto itr = separator; itr != turn_lane_data.end(); ++itr)
             {
                 // TODO we should check whether these are actually next to each other.
                 straight_item.from = std::min(straight_item.from, itr->from);
                 straight_item.to = std::max(straight_item.to, itr->to);
             }
-            turn_lane_data.erase(separator, turn_lane_data.end());
-            std::sort(turn_lane_data.begin(), turn_lane_data.end());
+
+            std::sort(turn_lane_data.begin(), separator);
+            turn_lane_data.push_back(straight_copy);
+            std::sort(turn_lane_data.begin() + offset, turn_lane_data.end());
             std::cout << "Lane Data Output:\n";
             for (auto data : turn_lane_data)
                 std::cout << "\"" << data.tag << "\" " << (int)data.from << " " << (int)data.to
                           << std::endl;
+            return {{turn_lane_data.begin(), turn_lane_data.begin() + offset},
+                    {turn_lane_data.begin() + offset, turn_lane_data.end()}};
         }
         else
         {
@@ -852,7 +986,7 @@ TurnLaneMatcher::LaneDataVector TurnLaneMatcher::trimToRelevantLaneData(
             std::sort(turn_lane_data.begin(), turn_lane_data.end());
         }
     }
-    return turn_lane_data;
+    return {std::move(turn_lane_data), {}};
 }
 
 Intersection TurnLaneMatcher::simpleMatchTuplesToTurns(Intersection intersection,
@@ -879,7 +1013,7 @@ Intersection TurnLaneMatcher::simpleMatchTuplesToTurns(Intersection intersection
         std::cout << "\"" << data.tag << "\" " << (int)data.from << " " << (int)data.to
                   << std::endl;
     std::cout << "Intersection:\n";
-    for (auto &road : intersection )
+    for (auto &road : intersection)
         std::cout << "\t" << toString(road) << std::endl;
 
     for (std::size_t road_index = 1, valid_turn = 0;

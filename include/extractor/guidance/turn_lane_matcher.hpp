@@ -58,8 +58,10 @@ class TurnLaneMatcher
                               const Intersection &intersection) const;
 
     LaneDataVector findRelevantLaneData(const NodeID at, const Intersection &intersection);
-    LaneDataVector trimToRelevantLaneData(const NodeID at, LaneDataVector turn_lane_data,
-                                          const Intersection &intersection) const;
+
+    // partition lane data into lane data relevant at current turn and at next turn
+    std::pair<TurnLaneMatcher::LaneDataVector, TurnLaneMatcher::LaneDataVector> partitionLaneData(
+        const NodeID at, LaneDataVector turn_lane_data, const Intersection &intersection) const;
 
     LaneDataVector handleNoneValueAtSimpleTurn(const NodeID at,
                                                LaneDataVector lane_data,

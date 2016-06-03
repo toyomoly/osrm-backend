@@ -1,3 +1,8 @@
+# 5.3.0
+    - API
+     - Introduces new `TurnType` in the form of `use lane`. The type indicates that you have to stick to a lane without turning
+     - Introduces lanes to the route response, indicating which lanes are to be used on a turn
+
 # 5.2.0 RC2
    Changes from 5.2.0 RC1
 
@@ -19,7 +24,6 @@
          - `bearing_before`/`bearing_after` of `StepManeuver` are now deprecated and will be removed in the next major release
          - `location` of `StepManeuvers` is now deprecated and will be removed in the next major release
          - every `RouteStep` now has property `intersections` containing a list of `Intersection` objects.
-     - Introduces new `TurnType` in the form of `use lane`. The type indicates that you have to stick to a lane without turning
 
    - Profile changes:
      - duration parser now accepts P[n]DT[n]H[n]M[n]S, P[n]W, PTHHMMSS and PTHH:MM:SS ISO8601 formats.
